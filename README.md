@@ -15,7 +15,7 @@ also works offline.
 ## Features
 
 - **Count by denomination** — one row per CAD coin/bill (5¢, 10¢, 25¢,
-  $1, $2, $5, $10, $20, $50, $100). Type a count or tap +/−.
+  $1, $2, $5, $10, $20, $50, $100). Type a count.
 - **Live total** — shown in a sticky footer that always stays visible.
 - **Balance to target** — figures out which items to remove so the
   till is left at the target amount, with the leftover composition as

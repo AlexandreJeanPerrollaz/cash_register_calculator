@@ -42,6 +42,22 @@ const DENOMINATIONS = [
 ];
 
 /**
+ * Standard CAD coin rolls (Royal Canadian Mint quantities).
+ * Each roll is treated as a single removable unit with a fixed face value.
+ *   id      — unique key in rollCounts
+ *   label   — what the user sees
+ *   perRoll — how many coins make up one roll (informational)
+ *   value   — face value of one full roll, in CENTS
+ */
+const COIN_ROLLS = [
+  { id: 'roll_c5',  label: '5¢ roll',  perRoll: 40, value: 200  },  // $2
+  { id: 'roll_c10', label: '10¢ roll', perRoll: 50, value: 500  },  // $5
+  { id: 'roll_c25', label: '25¢ roll', perRoll: 40, value: 1000 },  // $10
+  { id: 'roll_d1',  label: '$1 roll',  perRoll: 25, value: 2500 },  // $25
+  { id: 'roll_d2',  label: '$2 roll',  perRoll: 25, value: 5000 },  // $50
+];
+
+/**
  * Default target and ideal float composition.
  * The composition is what should remain in the till AFTER balancing.
  * It must sum to the target. The default sums to $200.00 and is weighted
@@ -85,6 +101,9 @@ const settings = {
 const counts = {};
 DENOMINATIONS.forEach(d => { counts[d.id] = 0; });
 
+const rollCounts = {};
+COIN_ROLLS.forEach(r => { rollCounts[r.id] = 0; });
+
 
 /* ---------------------------------------------------------------------
    3. HELPERS — currency formatting & parsing
@@ -116,44 +135,60 @@ function denomById(id) {
   return DENOMINATIONS.find(d => d.id === id);
 }
 
+/** Look up a coin-roll object by its id. */
+function rollById(id) {
+  return COIN_ROLLS.find(r => r.id === id);
+}
+
+/** Total in cents = loose coins/bills + full rolls. */
+function computeTotalCents() {
+  const loose = DENOMINATIONS.reduce((s, d) => s + counts[d.id] * d.value, 0);
+  const rolls = COIN_ROLLS.reduce((s, r) => s + rollCounts[r.id] * r.value, 0);
+  return loose + rolls;
+}
+
 
 /* ---------------------------------------------------------------------
    4. RENDERING — the count rows in the main UI
    --------------------------------------------------------------------- */
 
 /**
- * Build one row per denomination inside #denomination-list.
- * Each row has: label, − button, count input, + button, subtotal.
+ * Build one count row per item (denom or roll) inside the given container.
  *
- * Listeners are attached via event delegation on the container — so
- * we only register them once even though there are many buttons/inputs.
+ * The renderer is generic so we can reuse it for both the "Bills & Coins"
+ * list and the "Coin Rolls" list:
+ *   • items     — array of { id, label, value, ... }
+ *   • container — the <div> to populate (already in the DOM)
+ *   • countMap  — the state object whose values get mutated on input
+ *
+ * Listeners are attached via event delegation on the container, so we
+ * register them once even though there are many inputs.
  */
-function renderDenominationRows() {
-  const list = document.getElementById('denomination-list');
-  list.innerHTML = '';
+function renderCountRows(items, container, countMap) {
+  container.innerHTML = '';
 
   // Largest first → matches the physical layout of a register drawer
-  const ordered = [...DENOMINATIONS].reverse();
+  const ordered = [...items].reverse();
 
-  ordered.forEach(d => {
+  ordered.forEach(item => {
     const row = document.createElement('div');
     row.className = 'denom-row';
     // Input starts blank — an empty box reads as 0, no placeholder needed
     row.innerHTML = `
-      <span class="denom-label">${d.label}</span>
-      <input class="count-input" type="number" inputmode="numeric" min="0" data-id="${d.id}" aria-label="${d.label} count" />
-      <span class="subtotal" data-id="${d.id}">$0.00</span>
+      <span class="denom-label">${item.label}</span>
+      <input class="count-input" type="number" inputmode="numeric" min="0" data-id="${item.id}" aria-label="${item.label} count" />
+      <span class="subtotal" data-id="${item.id}">$0.00</span>
     `;
-    list.appendChild(row);
+    container.appendChild(row);
   });
 
-  // One delegated listener for typing into any count input
-  list.addEventListener('input', e => {
+  // One delegated listener for typing into any count input in this list
+  container.addEventListener('input', e => {
     if (!e.target.matches('.count-input')) return;
     const id = e.target.dataset.id;
     const val = parseInt(e.target.value, 10);
     // Empty / negative / NaN → treat as 0
-    counts[id] = isNaN(val) || val < 0 ? 0 : val;
+    countMap[id] = isNaN(val) || val < 0 ? 0 : val;
     refreshSubtotal(id);
     refreshTotal();
   });
@@ -161,57 +196,54 @@ function renderDenominationRows() {
 
 /** Update one row's subtotal cell after its count changes. */
 function refreshSubtotal(id) {
-  const d = denomById(id);
+  const item = denomById(id) || rollById(id);
+  if (!item) return;
+  const count = (denomById(id) ? counts : rollCounts)[id];
+  // Subtotal cells live in different containers; scope by id (which is unique)
   const cell = document.querySelector(`.subtotal[data-id="${id}"]`);
-  if (cell) cell.textContent = formatCents(counts[id] * d.value);
+  if (cell) cell.textContent = formatCents(count * item.value);
 }
 
 /** Recompute and display the total in the sticky footer. */
 function refreshTotal() {
-  const total = DENOMINATIONS.reduce(
-    (sum, d) => sum + counts[d.id] * d.value, 0
-  );
-  document.getElementById('total-amount').textContent = formatCents(total);
+  document.getElementById('total-amount').textContent = formatCents(computeTotalCents());
 }
 
 
 /* ---------------------------------------------------------------------
    5. THE BALANCE ALGORITHM
    ---------------------------------------------------------------------
-   Goal: figure out which coins/bills to remove so the till is left with
-   exactly `settings.targetCents` — and what's left should be as close to
-   the ideal composition as possible.
+   Goal: figure out which items to remove so the till is left with
+   exactly `settings.targetCents`.
+
+   Strategy: a single-pass greedy.
+     • Combine loose denominations and full rolls into one list.
+     • Walk it from highest face value to lowest.
+     • At each item, take as many as fit without overshooting the target.
+
+   For ties on face value (e.g. a $50 bill and a $50 toonie roll), bills
+   come first, then rolls, then loose coins. Rationale: bills are the
+   easiest to remove and the natural first thing to deposit; rolls beat
+   loose coins because pulling one roll is one motion versus counting
+   many individual coins.
 
    Three possible outcomes:
      • 'ok'          → list of items to remove
      • 'shortfall'   → till is below target; can't reach it at all
      • 'unreachable' → till is above target, but no exact-match removal
-                       is possible with the denominations present
-                       (rare in practice)
-
-   Strategy when removing (over-target case):
-     PHASE 1 — remove from "surplus" (count beyond ideal) first,
-               largest denomination first. Big bills are least useful for
-               making change, so they're the natural deposit.
-     PHASE 2 — if still over target after phase 1, dip into the ideal
-               reserve, again largest first. This protects the small-coin
-               reserve as long as possible.
-
-   At each step we only take items that fit without overshooting the
-   target. If we can't reach exactly the target (greedy gets stuck), we
-   return 'unreachable' rather than offering an incorrect suggestion.
+                       is possible with the items present (rare —
+                       e.g. need $3 but only $5 bills are in the till)
    --------------------------------------------------------------------- */
 
 function computeBalance() {
   const target = settings.targetCents;
-  const total = DENOMINATIONS.reduce(
-    (sum, d) => sum + counts[d.id] * d.value, 0
-  );
+  const total = computeTotalCents();
 
   // -- Case A: under target ------------------------------------------
   if (total < target) {
-    // Surface which denominations are below their ideal count, so the
-    // user knows where the till is short.
+    // Surface which loose denominations are below the ideal float, so
+    // the user knows where the drawer is short. (Rolls aren't part of
+    // the "ideal" composition — they're a separate reserve.)
     const shortDenoms = DENOMINATIONS
       .slice()
       .reverse() // display largest first
@@ -230,42 +262,52 @@ function computeBalance() {
 
   // -- Case B: exactly on target -------------------------------------
   if (total === target) {
-    return { status: 'ok', remove: {}, totalRemovedCents: 0 };
+    return {
+      status: 'ok',
+      removeLoose: {}, removeRolls: {},
+      totalRemovedCents: 0,
+    };
   }
 
   // -- Case C: over target — figure out what to remove ---------------
   let toRemove = total - target;
-  const remove = {};
-  DENOMINATIONS.forEach(d => { remove[d.id] = 0; });
+  const removeLoose = {};
+  const removeRolls = {};
+  DENOMINATIONS.forEach(d => { removeLoose[d.id] = 0; });
+  COIN_ROLLS.forEach(r => { removeRolls[r.id] = 0; });
 
-  // Largest denomination first (descending value)
-  const largestFirst = [...DENOMINATIONS].sort((a, b) => b.value - a.value);
+  // Build the unified item list. `kind` lets us route the take into
+  // the right output map and acts as the tie-breaker for equal values.
+  const KIND_PRIORITY = { bill: 0, roll: 1, coin: 2 };
+  const items = [];
+  DENOMINATIONS.forEach(d => {
+    items.push({
+      kind: d.value >= 500 ? 'bill' : 'coin', // $5+ is a bill, below is a coin
+      id: d.id,
+      value: d.value,
+      available: counts[d.id],
+    });
+  });
+  COIN_ROLLS.forEach(r => {
+    items.push({ kind: 'roll', id: r.id, value: r.value, available: rollCounts[r.id] });
+  });
 
-  // Phase 1: take from surplus (count beyond ideal) only.
-  for (const d of largestFirst) {
-    const surplus = Math.max(0, counts[d.id] - (settings.ideal[d.id] || 0));
-    const canTake = Math.min(surplus, Math.floor(toRemove / d.value));
-    remove[d.id] += canTake;
-    toRemove -= canTake * d.value;
+  // Sort: largest face value first, then bill > roll > coin for ties
+  items.sort((a, b) =>
+    b.value - a.value || KIND_PRIORITY[a.kind] - KIND_PRIORITY[b.kind]
+  );
+
+  for (const item of items) {
     if (toRemove === 0) break;
+    const canTake = Math.min(item.available, Math.floor(toRemove / item.value));
+    if (canTake === 0) continue;
+    if (item.kind === 'roll') removeRolls[item.id] += canTake;
+    else                      removeLoose[item.id] += canTake;
+    toRemove -= canTake * item.value;
   }
 
-  // Phase 2: still over? Dip into the ideal reserve, largest first.
-  if (toRemove > 0) {
-    for (const d of largestFirst) {
-      // Whatever's left in the till for this denom (ideal portion + any
-      // surplus we couldn't take in phase 1 because it didn't fit).
-      const available = counts[d.id] - remove[d.id];
-      const canTake = Math.min(available, Math.floor(toRemove / d.value));
-      remove[d.id] += canTake;
-      toRemove -= canTake * d.value;
-      if (toRemove === 0) break;
-    }
-  }
-
-  // If we still couldn't reach the target exactly, the available
-  // denominations don't allow it (e.g. need to remove $3 but only $5
-  // bills are present). Don't pretend we can — say so.
+  // If we still couldn't reach the target exactly, the items present
+  // don't allow it. Don't pretend we can — say so.
   if (toRemove > 0) {
     return {
       status: 'unreachable',
@@ -276,7 +318,8 @@ function computeBalance() {
 
   return {
     status: 'ok',
-    remove,
+    removeLoose,
+    removeRolls,
     totalRemovedCents: total - target,
   };
 }
@@ -311,15 +354,28 @@ function renderBalanceHTML(result) {
 
   // OK — removal list
   if (result.status === 'ok') {
-    // Largest first in display, only show denoms that have something to remove
-    const items = [...DENOMINATIONS].reverse()
-      .filter(d => result.remove[d.id] > 0)
-      .map(d => `
-        <li>
-          <span><span class="remove-count">${result.remove[d.id]}×</span> ${d.label}</span>
-          <span>${formatCents(result.remove[d.id] * d.value)}</span>
-        </li>
-      `).join('');
+    // Build a unified list of items to remove (loose + rolls), sorted
+    // by face value descending so the display matches the algorithm's
+    // walk order.
+    const lines = [];
+    DENOMINATIONS.forEach(d => {
+      if (result.removeLoose[d.id] > 0) {
+        lines.push({ label: d.label, count: result.removeLoose[d.id], value: d.value });
+      }
+    });
+    COIN_ROLLS.forEach(r => {
+      if (result.removeRolls[r.id] > 0) {
+        lines.push({ label: r.label, count: result.removeRolls[r.id], value: r.value });
+      }
+    });
+    lines.sort((a, b) => b.value - a.value);
+
+    const items = lines.map(l => `
+      <li>
+        <span><span class="remove-count">${l.count}×</span> ${l.label}</span>
+        <span>${formatCents(l.count * l.value)}</span>
+      </li>
+    `).join('');
 
     return `
       <div class="result-status ok">
@@ -517,8 +573,17 @@ function hideError() {
    --------------------------------------------------------------------- */
 
 function init() {
-  // Build the main count rows
-  renderDenominationRows();
+  // Build both count lists: loose denominations and coin rolls
+  renderCountRows(
+    DENOMINATIONS,
+    document.getElementById('denomination-list'),
+    counts
+  );
+  renderCountRows(
+    COIN_ROLLS,
+    document.getElementById('roll-list'),
+    rollCounts
+  );
   refreshTotal();
 
   // Footer button label reflects current target

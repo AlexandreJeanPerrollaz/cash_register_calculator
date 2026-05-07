@@ -16,10 +16,13 @@ also works offline.
 
 - **Count by denomination** — one row per CAD coin/bill (5¢, 10¢, 25¢,
   $1, $2, $5, $10, $20, $50, $100). Type a count.
+- **Coin rolls** — separate section for full rolls (5¢, 10¢, 25¢, $1,
+  $2). Standard Royal Canadian Mint quantities, treated as single
+  removable units when balancing.
 - **Live total** — shown in a sticky footer that always stays visible.
+  Includes both loose items and rolls.
 - **Balance to target** — figures out which items to remove so the
-  till is left at the target amount, with the leftover composition as
-  close as possible to your "ideal" float.
+  till is left at the target amount, taking the largest items first.
 - **Editable settings** — change the target amount and ideal
   composition behind a gear icon. Defaults are sensible enough that
   most users will never open this.
@@ -34,29 +37,28 @@ also works offline.
 ## How the balance algorithm works
 
 The "balance" button takes the current counts and computes what to
-remove. Three possible outcomes:
+remove. Four possible outcomes:
 
 1. **Already balanced** — the till is already at the target. Nothing
    to remove.
 2. **Removal list** — the till has more than the target. The app
    shows which items to take out (e.g. *"Remove 2× $20, 1× $10"*).
 3. **Shortfall** — the till has less than the target. The app says
-   how much you're short and which denominations are below ideal.
+   how much you're short and which loose denominations are below ideal.
 4. **Unreachable** (rare) — the till is over the target, but the
-   denominations present don't allow an exact match (e.g. you have
-   $3 over but only $5 bills). The app says so explicitly rather
-   than offering a wrong answer.
+   items present don't allow an exact match (e.g. you have $3 over
+   but only $5 bills). The app says so explicitly rather than
+   offering a wrong answer.
 
-When choosing what to remove, the algorithm walks denominations in
-two phases:
+The algorithm is a **single-pass, largest-first greedy**. It builds
+one combined list of every item in the till — loose bills, loose
+coins, and full rolls — sorts by face value descending, and walks
+the list taking as many of each item as fit in the deposit budget.
 
-- **Phase 1 — surplus first, largest denominations first.** Anything
-  in the till beyond the ideal count is the natural deposit. Big bills
-  are the least useful for making change, so they go first.
-- **Phase 2 — only if needed, dip into the ideal reserve.** If phase 1
-  didn't satisfy the deposit, the algorithm starts removing from the
-  ideal portion too (largest denominations first), so the small-coin
-  reserve for change is disturbed as little as possible.
+For ties on face value (e.g. a $50 bill and a $50 toonie roll), the
+order is **bill > roll > loose coin**. Bills are easiest to deposit;
+rolls beat loose coins because pulling one roll is one motion versus
+counting many individual coins.
 
 This is implemented in `computeBalance()` in `app.js`.
 
@@ -94,7 +96,9 @@ cash_register_calculator/
 - **`app.js`** — All app behavior, in 8 numbered sections. Reads
   top-to-bottom: constants → state → helpers → render → balance
   algorithm → modals → wiring. All money is stored as integer cents
-  internally to avoid floating-point bugs.
+  internally to avoid floating-point bugs. Two top-level constants
+  drive the UI: `DENOMINATIONS` (loose bills/coins) and `COIN_ROLLS`
+  (full rolls).
 - **`manifest.webmanifest`** — Tells the browser this site is
   installable as an app, what icons to use, and what colors / display
   mode to apply when launched from the home screen.
@@ -158,4 +162,5 @@ object near the top of `app.js`.
 If you want to add or remove a denomination, edit the `DENOMINATIONS`
 list — the UI rebuilds itself from that list, so the rest of the app
 adapts automatically. (Just remember to update `DEFAULTS.ideal` so the
-composition still sums to the target.)
+composition still sums to the target.) The same goes for `COIN_ROLLS`
+if you ever change the standard roll quantities.

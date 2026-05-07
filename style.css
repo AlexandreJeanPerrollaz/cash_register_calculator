@@ -75,7 +75,17 @@ body {
 main {
   flex: 1;
   overflow-y: auto;
-  padding: 8px 0 16px;
+  padding: 0 0 16px;
+}
+
+/* Small heading above each count list (Bills & Coins / Coin Rolls) */
+.section-title {
+  margin: 16px 16px 6px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #6a7280;
 }
 
 .denom-row {

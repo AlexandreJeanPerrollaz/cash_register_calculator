@@ -16,7 +16,7 @@
    that old caches get invalidated and clients pick up the new version.
    ===================================================================== */
 
-const CACHE_VERSION = 'cash-register-v1';
+const CACHE_VERSION = 'cash-register-v2';
 
 // Files that make up the entire app — all relative paths so the SW
 // works regardless of the GitHub Pages subpath the site is hosted at.

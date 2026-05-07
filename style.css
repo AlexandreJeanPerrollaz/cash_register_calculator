@@ -90,8 +90,9 @@ main {
 
 .denom-row {
   display: grid;
-  /* [label] [input] [subtotal] */
-  grid-template-columns: 70px 1fr 90px;
+  /* [label] [input] [subtotal] — label widened from 70px to fit roll
+     labels like "10¢ roll" / "25¢ roll" without truncating */
+  grid-template-columns: 90px 1fr 90px;
   align-items: center;
   gap: 12px;
   padding: 10px 12px;

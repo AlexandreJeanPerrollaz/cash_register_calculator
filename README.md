@@ -17,8 +17,9 @@ also works offline.
 - **Count by denomination** — one row per CAD coin/bill (5¢, 10¢, 25¢,
   $1, $2, $5, $10, $20, $50, $100). Type a count.
 - **Coin rolls** — separate section for full rolls (5¢, 10¢, 25¢, $1,
-  $2). Standard Royal Canadian Mint quantities, treated as single
-  removable units when balancing.
+  $2). Standard Royal Canadian Mint quantities. Rolls count toward
+  the till total but are kept as a reserve — the balance algorithm
+  never suggests breaking them open.
 - **Live total** — shown in a sticky footer that always stays visible.
   Includes both loose items and rolls.
 - **Balance to target** — figures out which items to remove so the
@@ -50,15 +51,14 @@ remove. Four possible outcomes:
    but only $5 bills). The app says so explicitly rather than
    offering a wrong answer.
 
-The algorithm is a **single-pass, largest-first greedy**. It builds
-one combined list of every item in the till — loose bills, loose
-coins, and full rolls — sorts by face value descending, and walks
-the list taking as many of each item as fit in the deposit budget.
+The algorithm is a **single-pass, largest-first greedy** over the
+loose bills and coins. Coin rolls count toward the till's total but
+are *never* suggested for removal — they stay as a reserve.
 
-For ties on face value (e.g. a $50 bill and a $50 toonie roll), the
-order is **bill > roll > loose coin**. Bills are easiest to deposit;
-rolls beat loose coins because pulling one roll is one motion versus
-counting many individual coins.
+If the till is over the target purely because of rolls (e.g. you
+have $250 in rolls and zero loose, target $200), the algorithm
+returns "unreachable" rather than suggesting you break a roll. You
+have to break one yourself (or adjust the target).
 
 This is implemented in `computeBalance()` in `app.js`.
 

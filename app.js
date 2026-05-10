@@ -213,31 +213,30 @@ function refreshTotal() {
 /* ---------------------------------------------------------------------
    5. THE BALANCE ALGORITHM
    ---------------------------------------------------------------------
-   Goal: figure out which items to remove so the till is left with
-   exactly `settings.targetCents`.
+   Goal: figure out which loose bills/coins to remove so the till is
+   left with exactly `settings.targetCents`.
 
-   Strategy: a single-pass greedy.
-     • Combine loose denominations and full rolls into one list.
-     • Walk it from highest face value to lowest.
-     • At each item, take as many as fit without overshooting the target.
+   Coin rolls are treated as a RESERVE: they count toward the till's
+   total (so a $50 toonie roll contributes $50 to the running balance),
+   but they are NEVER suggested for removal. Only loose bills and coins
+   get deposited.
 
-   For ties on face value (e.g. a $50 bill and a $50 toonie roll), bills
-   come first, then rolls, then loose coins. Rationale: bills are the
-   easiest to remove and the natural first thing to deposit; rolls beat
-   loose coins because pulling one roll is one motion versus counting
-   many individual coins.
+   Strategy: single-pass greedy over loose denominations only, largest
+   face value first.
 
    Three possible outcomes:
-     • 'ok'          → list of items to remove
-     • 'shortfall'   → till is below target; can't reach it at all
-     • 'unreachable' → till is above target, but no exact-match removal
-                       is possible with the items present (rare —
-                       e.g. need $3 but only $5 bills are in the till)
+     • 'ok'          → list of loose items to remove
+     • 'shortfall'   → till total is below target; can't reach it at all
+     • 'unreachable' → till total is above target, but the loose items
+                       alone can't be reduced to exactly the target
+                       (e.g. the till is over because of rolls we won't
+                       break, or the loose mix can't subtract to the
+                       right amount)
    --------------------------------------------------------------------- */
 
 function computeBalance() {
   const target = settings.targetCents;
-  const total = computeTotalCents();
+  const total = computeTotalCents(); // includes rolls
 
   // -- Case A: under target ------------------------------------------
   if (total < target) {
@@ -262,56 +261,32 @@ function computeBalance() {
 
   // -- Case B: exactly on target -------------------------------------
   if (total === target) {
-    return {
-      status: 'ok',
-      removeLoose: {}, removeRolls: {},
-      totalRemovedCents: 0,
-    };
+    return { status: 'ok', removeLoose: {}, totalRemovedCents: 0 };
   }
 
-  // -- Case C: over target — figure out what to remove ---------------
+  // -- Case C: over target — pick loose items to remove --------------
   let toRemove = total - target;
   const removeLoose = {};
-  const removeRolls = {};
   DENOMINATIONS.forEach(d => { removeLoose[d.id] = 0; });
-  COIN_ROLLS.forEach(r => { removeRolls[r.id] = 0; });
 
-  // Build the unified item list. `kind` lets us route the take into
-  // the right output map and acts as the tie-breaker for equal values.
-  const KIND_PRIORITY = { bill: 0, roll: 1, coin: 2 };
-  const items = [];
-  DENOMINATIONS.forEach(d => {
-    items.push({
-      kind: d.value >= 500 ? 'bill' : 'coin', // $5+ is a bill, below is a coin
-      id: d.id,
-      value: d.value,
-      available: counts[d.id],
-    });
-  });
-  COIN_ROLLS.forEach(r => {
-    items.push({ kind: 'roll', id: r.id, value: r.value, available: rollCounts[r.id] });
-  });
+  // Largest face value first. Rolls are intentionally excluded — they
+  // stay in the till as a reserve.
+  const looseLargestFirst = [...DENOMINATIONS].sort((a, b) => b.value - a.value);
 
-  // Sort: largest face value first, then bill > roll > coin for ties
-  items.sort((a, b) =>
-    b.value - a.value || KIND_PRIORITY[a.kind] - KIND_PRIORITY[b.kind]
-  );
-
-  for (const item of items) {
+  for (const d of looseLargestFirst) {
     if (toRemove === 0) break;
-    const canTake = Math.min(item.available, Math.floor(toRemove / item.value));
+    const canTake = Math.min(counts[d.id], Math.floor(toRemove / d.value));
     if (canTake === 0) continue;
-    if (item.kind === 'roll') removeRolls[item.id] += canTake;
-    else                      removeLoose[item.id] += canTake;
-    toRemove -= canTake * item.value;
+    removeLoose[d.id] += canTake;
+    toRemove -= canTake * d.value;
   }
 
-  // If we still couldn't reach the target exactly, the items present
-  // don't allow it. Don't pretend we can — say so.
+  // If loose alone can't reach the target exactly, say so. This happens
+  // when the till is over because of rolls (which we won't break) or
+  // when the loose mix can't subtract to the right amount.
   if (toRemove > 0) {
     return {
       status: 'unreachable',
-      // The closest we could get to the target by stopping early
       closestRemainderCents: target + toRemove,
     };
   }
@@ -319,7 +294,6 @@ function computeBalance() {
   return {
     status: 'ok',
     removeLoose,
-    removeRolls,
     totalRemovedCents: total - target,
   };
 }
@@ -352,30 +326,16 @@ function renderBalanceHTML(result) {
     `;
   }
 
-  // OK — removal list
+  // OK — removal list (loose only; rolls are reserve)
   if (result.status === 'ok') {
-    // Build a unified list of items to remove (loose + rolls), sorted
-    // by face value descending so the display matches the algorithm's
-    // walk order.
-    const lines = [];
-    DENOMINATIONS.forEach(d => {
-      if (result.removeLoose[d.id] > 0) {
-        lines.push({ label: d.label, count: result.removeLoose[d.id], value: d.value });
-      }
-    });
-    COIN_ROLLS.forEach(r => {
-      if (result.removeRolls[r.id] > 0) {
-        lines.push({ label: r.label, count: result.removeRolls[r.id], value: r.value });
-      }
-    });
-    lines.sort((a, b) => b.value - a.value);
-
-    const items = lines.map(l => `
-      <li>
-        <span><span class="remove-count">${l.count}×</span> ${l.label}</span>
-        <span>${formatCents(l.count * l.value)}</span>
-      </li>
-    `).join('');
+    const items = [...DENOMINATIONS].reverse()
+      .filter(d => result.removeLoose[d.id] > 0)
+      .map(d => `
+        <li>
+          <span><span class="remove-count">${result.removeLoose[d.id]}×</span> ${d.label}</span>
+          <span>${formatCents(result.removeLoose[d.id] * d.value)}</span>
+        </li>
+      `).join('');
 
     return `
       <div class="result-status ok">
@@ -411,13 +371,13 @@ function renderBalanceHTML(result) {
     `;
   }
 
-  // Unreachable — over target but no exact removal possible
+  // Unreachable — over target but loose alone can't subtract to it
   return `
     <div class="result-status warning">
-      Cannot make exactly ${targetStr} with the coins currently in the till.
+      Cannot reach exactly ${targetStr} by removing loose bills and coins.
     </div>
     <p>Closest amount we could leave: ${formatCents(result.closestRemainderCents)}.</p>
-    <p class="hint">Try adjusting individual counts or adding smaller change to the till.</p>
+    <p class="hint">Coin rolls aren't broken open by this calculation — if the till is over because of rolls, you'd need to break one (or accept the closest amount).</p>
   `;
 }
 
